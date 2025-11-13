@@ -6,7 +6,7 @@ function MessageBubble({ msg }) {
   const isUser = msg.role === 'user'
   return (
     <div className={`w-full flex ${isUser ? 'justify-end' : 'justify-start'} my-2`}>
-      <div className={`${isUser ? 'bg-blue-500 text-white' : 'bg-white text-gray-800'} shadow rounded-2xl px-4 py-3 max-w-[80%]`}>        
+      <div className={`${isUser ? 'bg-blue-500 text-white' : 'bg-white text-gray-800'} shadow rounded-2xl px-4 py-3 max-w-[80%]`}>
         {msg.type === 'html' ? (
           <div className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: msg.html }} />
         ) : msg.type === 'chart' ? (
@@ -15,6 +15,11 @@ function MessageBubble({ msg }) {
           <pre className="text-xs whitespace-pre-wrap">{JSON.stringify(msg.json, null, 2)}</pre>
         ) : (
           <p className="whitespace-pre-wrap">{msg.content || msg.message}</p>
+        )}
+        {msg.download_url && (
+          <div className="mt-2">
+            <a className="text-xs text-blue-600 underline" href={`${BACKEND_URL}${msg.download_url}`} target="_blank" rel="noreferrer">Scarica Excel</a>
+          </div>
         )}
         <div className="mt-2 flex gap-2">
           {msg.buttons?.includes('chart') && (
@@ -36,15 +41,19 @@ function MessageBubble({ msg }) {
 function ChartBubble({ data }) {
   const canvasRef = useRef(null)
   useEffect(() => {
+    let chartInstance
     import('chart.js/auto').then(({ default: Chart }) => {
-      const ctx = canvasRef.current.getContext('2d')
-      const c = new Chart(ctx, {
+      const ctx = canvasRef.current?.getContext('2d')
+      if (!ctx) return
+      chartInstance = new Chart(ctx, {
         type: data.chart || 'bar',
         data: { labels: data.labels || [], datasets: data.datasets || [] },
         options: { responsive: true, plugins: { legend: { display: true } } }
       })
-      return () => c.destroy()
     })
+    return () => {
+      if (chartInstance) chartInstance.destroy()
+    }
   }, [data])
   return <canvas ref={canvasRef} className="max-w-full" />
 }
@@ -55,11 +64,27 @@ function App() {
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [backendStatus, setBackendStatus] = useState('checking')
   const listRef = useRef(null)
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
   }, [messages])
+
+  // Ping backend on mount
+  useEffect(() => {
+    const ping = async () => {
+      try {
+        const r = await fetch(`${BACKEND_URL}/test`)
+        if (!r.ok) throw new Error('non-200')
+        setBackendStatus('ok')
+      } catch (e) {
+        setBackendStatus('down')
+        setMessages(m => [...m, { id: crypto.randomUUID(), role: 'assistant', type: 'text', content: 'Backend non raggiungibile. Controlla le variabili DB o riprova tra poco.' }])
+      }
+    }
+    ping()
+  }, [])
 
   const send = async () => {
     if (!input.trim()) return
@@ -72,11 +97,21 @@ function App() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMsg.content, session_id: 'web' })
       })
+
+      if (!res.ok) {
+        let errText = res.statusText
+        try {
+          const j = await res.json()
+          errText = j.detail || j.message || errText
+        } catch {}
+        throw new Error(errText || `HTTP ${res.status}`)
+      }
+
       const data = await res.json()
       const assistant = { id: data.id || crypto.randomUUID(), role: 'assistant', ts: Date.now(), ...data }
       setMessages(m => [...m, assistant])
     } catch (e) {
-      setMessages(m => [...m, { id: crypto.randomUUID(), role: 'assistant', type: 'text', content: 'Errore di rete: ' + e.message }])
+      setMessages(m => [...m, { id: crypto.randomUUID(), role: 'assistant', type: 'text', content: 'Errore: ' + (e.message || 'richiesta fallita') }])
     } finally {
       setLoading(false)
     }
@@ -94,6 +129,9 @@ function App() {
       <div className="sticky top-0 z-10 bg-[#075E54] text-white px-4 py-3 shadow flex items-center gap-3">
         <div className="font-semibold">AI DB Chat</div>
         <div className="text-xs opacity-80">WhatsApp-like</div>
+        {backendStatus === 'down' && (
+          <span className="ml-auto text-[11px] bg-red-600/80 px-2 py-1 rounded">Backend offline</span>
+        )}
       </div>
 
       <div ref={listRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
